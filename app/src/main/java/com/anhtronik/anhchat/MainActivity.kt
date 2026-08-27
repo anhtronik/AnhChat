@@ -546,7 +546,7 @@ class MainActivity : Activity() {
 
         root.addView(bottom)
 
-        View.setOnApplyWindowInsetsListener(bottom) { view, insets ->
+        bottom.setOnApplyWindowInsetsListener { view, insets ->
 
             view.setPadding(
                 dp(6),
