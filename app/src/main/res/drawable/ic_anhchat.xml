@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Background AnhChat -->
+    <path
+        android:fillColor="#08776B"
+        android:pathData="M0,0H108V108H0Z" />
+
+    <!-- Bubble chat -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M29,24H79C86.2,24 92,29.8 92,37V66C92,73.2 86.2,79 79,79H56L38,92V79H29C21.8,79 16,73.2 16,66V37C16,29.8 21.8,24 29,24Z" />
+
+    <!-- Tiga titik -->
+    <path
+        android:fillColor="#08776B"
+        android:pathData="M34,48H43V57H34ZM50,48H59V57H50ZM66,48H75V57H66Z" />
+
+</vector>
