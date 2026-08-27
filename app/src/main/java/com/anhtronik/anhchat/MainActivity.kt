@@ -5,18 +5,42 @@ import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 class MainActivity : Activity() {
 
-    private lateinit var content: LinearLayout
+    private val api =
+        "https://anhchat-api.fahmiherman05.workers.dev"
 
-    private fun dp(value: Int): Int {
-        return (value * resources.displayMetrics.density).toInt()
+    private val handler =
+        Handler(Looper.getMainLooper())
+
+    private var pollRunnable: Runnable? = null
+    private var currentChatPhone: String? = null
+    private var lastMessages = ""
+
+    private val prefs by lazy {
+        getSharedPreferences(
+            "anhchat_account",
+            MODE_PRIVATE
+        )
+    }
+
+    private fun dp(v: Int): Int {
+        return (
+            v * resources.displayMetrics.density
+        ).toInt()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,45 +50,531 @@ class MainActivity : Activity() {
             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         )
 
-        showHome()
+        val phone = prefs.getString(
+            "phone",
+            null
+        )
+
+        if (phone.isNullOrEmpty()) {
+            showLogin()
+        } else {
+            showHome()
+        }
     }
 
-    private fun showHome() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+    private fun normalizePhone(
+        value: String
+    ): String? {
+
+        var phone = value
+            .replace(" ", "")
+            .replace("-", "")
+            .replace("(", "")
+            .replace(")", "")
+
+        phone = when {
+            phone.startsWith("+62") ->
+                phone
+
+            phone.startsWith("62") ->
+                "+$phone"
+
+            phone.startsWith("0") ->
+                "+62${phone.substring(1)}"
+
+            else ->
+                return null
         }
 
-        val header = TextView(this).apply {
-            text = "AnhChat"
-            textSize = 24f
-            setTextColor(Color.WHITE)
-            setTypeface(null, Typeface.BOLD)
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(10), dp(18), dp(10))
-            setBackgroundColor(Color.rgb(7, 94, 84))
+        if (
+            phone.length < 11 ||
+            phone.length > 16
+        ) {
+            return null
         }
+
+        if (!phone.substring(1).all {
+                it.isDigit()
+            }) {
+            return null
+        }
+
+        return phone
+    }
+
+    private fun postJson(
+        path: String,
+        body: JSONObject
+    ): JSONObject {
+
+        val connection =
+            URL("$api$path")
+                .openConnection()
+                    as HttpURLConnection
+
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+        connection.doOutput = true
+        connection.setRequestProperty(
+            "Content-Type",
+            "application/json"
+        )
+
+        connection.outputStream.use {
+            it.write(
+                body.toString()
+                    .toByteArray()
+            )
+        }
+
+        val stream =
+            if (
+                connection.responseCode
+                    in 200..299
+            ) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+
+        val text =
+            stream?.bufferedReader()
+                ?.use { it.readText() }
+                ?: "{}"
+
+        connection.disconnect()
+
+        return JSONObject(text)
+    }
+
+    private fun getJson(
+        path: String
+    ): JSONObject {
+
+        val connection =
+            URL("$api$path")
+                .openConnection()
+                    as HttpURLConnection
+
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+
+        val stream =
+            if (
+                connection.responseCode
+                    in 200..299
+            ) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+
+        val text =
+            stream?.bufferedReader()
+                ?.use { it.readText() }
+                ?: "{}"
+
+        connection.disconnect()
+
+        return JSONObject(text)
+    }
+
+    private fun background(
+        work: () -> Unit
+    ) {
+        Thread {
+            try {
+                work()
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Koneksi gagal: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun showLogin() {
+        stopPolling()
+
+        val root = LinearLayout(this).apply {
+            orientation =
+                LinearLayout.VERTICAL
+
+            gravity = Gravity.CENTER
+
+            setPadding(
+                dp(28),
+                dp(40),
+                dp(28),
+                dp(40)
+            )
+
+            setBackgroundColor(
+                Color.WHITE
+            )
+        }
+
+        val logo = TextView(this).apply {
+            text = "💬"
+            textSize = 72f
+            gravity = Gravity.CENTER
+        }
+
+        val title = TextView(this).apply {
+            text = "Selamat datang di AnhChat"
+            textSize = 26f
+
+            setTextColor(Color.BLACK)
+
+            setTypeface(
+                null,
+                Typeface.BOLD
+            )
+
+            gravity = Gravity.CENTER
+
+            setPadding(
+                0,
+                dp(15),
+                0,
+                dp(10)
+            )
+        }
+
+        val description =
+            TextView(this).apply {
+
+                text =
+                    "Masukkan nomor HP untuk menggunakan AnhChat"
+
+                textSize = 15f
+                setTextColor(Color.DKGRAY)
+                gravity = Gravity.CENTER
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(25)
+                )
+            }
+
+        val phoneInput =
+            EditText(this).apply {
+
+                hint = "08xxxxxxxxxx"
+
+                inputType =
+                    InputType.TYPE_CLASS_PHONE
+
+                textSize = 18f
+
+                setPadding(
+                    dp(14),
+                    dp(12),
+                    dp(14),
+                    dp(12)
+                )
+            }
+
+        val nameInput =
+            EditText(this).apply {
+
+                hint = "Nama Anda"
+
+                inputType =
+                    InputType.TYPE_CLASS_TEXT
+            }
+
+        val button =
+            Button(this).apply {
+
+                text = "LANJUTKAN"
+
+                setOnClickListener {
+
+                    val phone =
+                        normalizePhone(
+                            phoneInput.text
+                                .toString()
+                        )
+
+                    val name =
+                        nameInput.text
+                            .toString()
+                            .trim()
+
+                    if (phone == null) {
+                        phoneInput.error =
+                            "Nomor HP tidak valid"
+                        return@setOnClickListener
+                    }
+
+                    if (name.length < 2) {
+                        nameInput.error =
+                            "Masukkan nama"
+                        return@setOnClickListener
+                    }
+
+                    isEnabled = false
+                    text = "Memproses..."
+
+                    background {
+
+                        val response =
+                            postJson(
+                                "/users/register",
+                                JSONObject().apply {
+                                    put(
+                                        "phone",
+                                        phone
+                                    )
+                                    put(
+                                        "name",
+                                        name
+                                    )
+                                }
+                            )
+
+                        runOnUiThread {
+
+                            isEnabled = true
+                            text = "LANJUTKAN"
+
+                            if (
+                                response.optBoolean(
+                                    "ok"
+                                )
+                            ) {
+
+                                prefs.edit()
+                                    .putString(
+                                        "phone",
+                                        phone
+                                    )
+                                    .putString(
+                                        "name",
+                                        name
+                                    )
+                                    .apply()
+
+                                showHome()
+
+                            } else {
+
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    response.optString(
+                                        "message",
+                                        "Pendaftaran gagal"
+                                    ),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
+                }
+            }
+
+        root.addView(logo)
 
         root.addView(
-            header,
+            title,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(64)
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
 
-        val tabs = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.rgb(7, 94, 84))
-        }
+        root.addView(description)
 
-        val chatTab = makeTab("CHAT")
-        val statusTab = makeTab("STATUS")
-        val callTab = makeTab("PANGGILAN")
+        root.addView(
+            phoneInput,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        root.addView(
+            nameInput,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        root.addView(
+            button,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(58)
+            ).apply {
+                topMargin = dp(20)
+            }
+        )
+
+        val notice =
+            TextView(this).apply {
+
+                text =
+                    "Versi pengujian AnhChat"
+
+                textSize = 12f
+                setTextColor(Color.GRAY)
+                gravity = Gravity.CENTER
+
+                setPadding(
+                    0,
+                    dp(18),
+                    0,
+                    0
+                )
+            }
+
+        root.addView(notice)
+
+        setContentView(root)
+    }
+
+    private fun showHome() {
+        stopPolling()
+
+        currentChatPhone = null
+
+        val myPhone =
+            prefs.getString(
+                "phone",
+                ""
+            ) ?: ""
+
+        val myName =
+            prefs.getString(
+                "name",
+                "AnhChat"
+            ) ?: "AnhChat"
+
+        val root =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.VERTICAL
+
+                setBackgroundColor(
+                    Color.WHITE
+                )
+            }
+
+        val header =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.HORIZONTAL
+
+                gravity =
+                    Gravity.CENTER_VERTICAL
+
+                setPadding(
+                    dp(18),
+                    dp(10),
+                    dp(10),
+                    dp(10)
+                )
+
+                setBackgroundColor(
+                    Color.rgb(
+                        7,
+                        94,
+                        84
+                    )
+                )
+            }
+
+        val title =
+            TextView(this).apply {
+
+                text = "AnhChat"
+                textSize = 25f
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+                setTypeface(
+                    null,
+                    Typeface.BOLD
+                )
+            }
+
+        val account =
+            TextView(this).apply {
+
+                text = "⋮"
+                textSize = 30f
+
+                gravity = Gravity.CENTER
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+                setOnClickListener {
+                    showAccountMenu()
+                }
+            }
+
+        header.addView(
+            title,
+            LinearLayout.LayoutParams(
+                0,
+                dp(58),
+                1f
+            )
+        )
+
+        header.addView(
+            account,
+            LinearLayout.LayoutParams(
+                dp(55),
+                dp(58)
+            )
+        )
+
+        root.addView(header)
+
+        val tabs =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.HORIZONTAL
+
+                setBackgroundColor(
+                    Color.rgb(
+                        7,
+                        94,
+                        84
+                    )
+                )
+            }
+
+        val chatTab =
+            makeTab("CHAT")
+
+        val statusTab =
+            makeTab("STATUS")
+
+        val callsTab =
+            makeTab("PANGGILAN")
 
         tabs.addView(chatTab)
         tabs.addView(statusTab)
-        tabs.addView(callTab)
+        tabs.addView(callsTab)
 
         root.addView(
             tabs,
@@ -74,19 +584,22 @@ class MainActivity : Activity() {
             )
         )
 
-        content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(20))
-        }
+        val body =
+            LinearLayout(this).apply {
 
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-        }
+                orientation =
+                    LinearLayout.VERTICAL
 
-        scroll.addView(content)
+                setPadding(
+                    dp(15),
+                    dp(15),
+                    dp(15),
+                    dp(20)
+                )
+            }
 
         root.addView(
-            scroll,
+            body,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -94,284 +607,501 @@ class MainActivity : Activity() {
             )
         )
 
-        chatTab.setOnClickListener { showChats() }
-        statusTab.setOnClickListener { showStatus() }
-        callTab.setOnClickListener { showCalls() }
+        fun showChats() {
+            body.removeAllViews()
+
+            val me =
+                TextView(this).apply {
+
+                    text =
+                        "$myName\n$myPhone"
+
+                    textSize = 16f
+
+                    setTextColor(
+                        Color.DKGRAY
+                    )
+
+                    setPadding(
+                        dp(10),
+                        dp(8),
+                        dp(10),
+                        dp(20)
+                    )
+                }
+
+            body.addView(me)
+
+            val info =
+                TextView(this).apply {
+
+                    text =
+                        "Cari nomor pengguna AnhChat untuk mulai mengirim pesan."
+
+                    textSize = 16f
+
+                    setTextColor(
+                        Color.DKGRAY
+                    )
+
+                    setPadding(
+                        dp(10),
+                        dp(20),
+                        dp(10),
+                        dp(20)
+                    )
+                }
+
+            body.addView(info)
+
+            val newChat =
+                Button(this).apply {
+
+                    text =
+                        "＋ CHAT NOMOR BARU"
+
+                    setOnClickListener {
+                        showNumberDialog()
+                    }
+                }
+
+            body.addView(newChat)
+        }
+
+        chatTab.setOnClickListener {
+            showChats()
+        }
+
+        statusTab.setOnClickListener {
+
+            body.removeAllViews()
+
+            body.addView(
+                TextView(this).apply {
+                    text =
+                        "STATUS\n\nStatus foto, video dan teks 24 jam akan ditambahkan pada tahap berikutnya."
+
+                    textSize = 18f
+
+                    setPadding(
+                        dp(15),
+                        dp(25),
+                        dp(15),
+                        dp(15)
+                    )
+                }
+            )
+        }
+
+        callsTab.setOnClickListener {
+
+            body.removeAllViews()
+
+            body.addView(
+                TextView(this).apply {
+
+                    text =
+                        "PANGGILAN\n\nRiwayat voice call dan video call akan ditambahkan setelah sistem chat stabil."
+
+                    textSize = 18f
+
+                    setPadding(
+                        dp(15),
+                        dp(25),
+                        dp(15),
+                        dp(15)
+                    )
+                }
+            )
+        }
 
         setContentView(root)
+
         showChats()
     }
 
-    private fun makeTab(title: String): TextView {
+    private fun makeTab(
+        title: String
+    ): TextView {
+
         return TextView(this).apply {
+
             text = title
             textSize = 14f
-            setTextColor(Color.WHITE)
+
             gravity = Gravity.CENTER
-            setTypeface(null, Typeface.BOLD)
 
-            layoutParams = LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                1f
+            setTextColor(
+                Color.WHITE
             )
+
+            setTypeface(
+                null,
+                Typeface.BOLD
+            )
+
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    1f
+                )
         }
     }
 
-    private fun showChats() {
-        content.removeAllViews()
+    private fun showAccountMenu() {
 
-        val info = TextView(this).apply {
-            text = "Chat menggunakan nomor HP"
-            textSize = 13f
-            setTextColor(Color.GRAY)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
+        val phone =
+            prefs.getString(
+                "phone",
+                ""
+            ) ?: ""
 
-        content.addView(info)
+        val name =
+            prefs.getString(
+                "name",
+                ""
+            ) ?: ""
 
-        addChat(
-            "Admin Anhtronik",
-            "+628xxxxxxxxxx",
-            "Selamat datang di AnhChat 👋"
-        )
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setMessage(phone)
+            .setPositiveButton(
+                "Tutup",
+                null
+            )
+            .setNegativeButton(
+                "Ganti nomor / Keluar"
+            ) { _, _ ->
 
-        val newChat = Button(this).apply {
-            text = "＋ CHAT NOMOR BARU"
-            setOnClickListener {
-                showNumberDialog()
+                prefs.edit()
+                    .clear()
+                    .apply()
+
+                showLogin()
             }
-        }
-
-        content.addView(newChat)
-    }
-
-    private fun addChat(
-        name: String,
-        phone: String,
-        message: String
-    ) {
-        val item = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            isClickable = true
-            setBackgroundColor(Color.WHITE)
-        }
-
-        val title = TextView(this).apply {
-            text = name
-            textSize = 18f
-            setTextColor(Color.BLACK)
-            setTypeface(null, Typeface.BOLD)
-        }
-
-        val number = TextView(this).apply {
-            text = phone
-            textSize = 13f
-            setTextColor(Color.GRAY)
-        }
-
-        val msg = TextView(this).apply {
-            text = message
-            textSize = 15f
-            setTextColor(Color.DKGRAY)
-        }
-
-        item.addView(title)
-        item.addView(number)
-        item.addView(msg)
-
-        item.setOnClickListener {
-            openChat(phone)
-        }
-
-        content.addView(item)
-
-        content.addView(
-            View(this).apply {
-                setBackgroundColor(Color.LTGRAY)
-            },
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                1
-            )
-        )
+            .show()
     }
 
     private fun showNumberDialog() {
-        val input = EditText(this).apply {
-            hint = "08xxxxxxxxxx"
-            inputType = InputType.TYPE_CLASS_PHONE
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
 
-        val wrapper = LinearLayout(this).apply {
-            setPadding(dp(20), dp(5), dp(20), 0)
-            addView(
-                input,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
+        val input =
+            EditText(this).apply {
+
+                hint =
+                    "08xxxxxxxxxx"
+
+                inputType =
+                    InputType.TYPE_CLASS_PHONE
+            }
+
+        val wrap =
+            LinearLayout(this).apply {
+
+                setPadding(
+                    dp(20),
+                    dp(5),
+                    dp(20),
+                    0
                 )
-            )
-        }
 
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Mulai chat")
-            .setMessage("Masukkan nomor HP pengguna AnhChat")
-            .setView(wrapper)
-            .setNegativeButton("Batal", null)
-            .setPositiveButton("Cari", null)
-            .create()
+                addView(
+                    input,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                )
+            }
+
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle(
+                    "Chat Baru"
+                )
+                .setMessage(
+                    "Masukkan nomor pengguna AnhChat"
+                )
+                .setView(wrap)
+                .setNegativeButton(
+                    "Batal",
+                    null
+                )
+                .setPositiveButton(
+                    "Cari",
+                    null
+                )
+                .create()
 
         dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+
+            dialog
+                .getButton(
+                    AlertDialog.BUTTON_POSITIVE
+                )
                 .setOnClickListener {
 
-                    val phone = normalizePhone(
-                        input.text.toString()
-                    )
+                    val phone =
+                        normalizePhone(
+                            input.text
+                                .toString()
+                        )
 
                     if (phone == null) {
-                        input.error = "Nomor HP tidak valid"
+                        input.error =
+                            "Nomor tidak valid"
                         return@setOnClickListener
                     }
 
-                    dialog.dismiss()
-                    openChat(phone)
+                    val myPhone =
+                        prefs.getString(
+                            "phone",
+                            ""
+                        )
+
+                    if (phone == myPhone) {
+                        input.error =
+                            "Itu nomor Anda sendiri"
+                        return@setOnClickListener
+                    }
+
+                    dialog.getButton(
+                        AlertDialog.BUTTON_POSITIVE
+                    ).isEnabled = false
+
+                    background {
+
+                        val encoded =
+                            URLEncoder.encode(
+                                phone,
+                                "UTF-8"
+                            )
+
+                        val response =
+                            getJson(
+                                "/users/find?phone=$encoded"
+                            )
+
+                        runOnUiThread {
+
+                            if (
+                                response.optBoolean(
+                                    "registered"
+                                )
+                            ) {
+
+                                dialog.dismiss()
+
+                                val user =
+                                    response.optJSONObject(
+                                        "user"
+                                    )
+
+                                val name =
+                                    user?.optString(
+                                        "name"
+                                    ) ?: phone
+
+                                openChat(
+                                    phone,
+                                    name
+                                )
+
+                            } else {
+
+                                dialog.getButton(
+                                    AlertDialog.BUTTON_POSITIVE
+                                ).isEnabled = true
+
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Nomor belum menggunakan AnhChat",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
                 }
         }
 
         dialog.show()
     }
 
-    private fun normalizePhone(value: String): String? {
-        var phone = value
-            .replace(" ", "")
-            .replace("-", "")
-            .replace("(", "")
-            .replace(")", "")
+    private fun openChat(
+        phone: String,
+        name: String
+    ) {
+        stopPolling()
 
-        phone = when {
-            phone.startsWith("+62") -> phone
+        currentChatPhone = phone
+        lastMessages = ""
 
-            phone.startsWith("62") ->
-                "+$phone"
+        val root =
+            LinearLayout(this).apply {
 
-            phone.startsWith("0") ->
-                "+62${phone.substring(1)}"
+                orientation =
+                    LinearLayout.VERTICAL
 
-            else -> return null
-        }
-
-        if (phone.length < 11 || phone.length > 16) {
-            return null
-        }
-
-        return phone
-    }
-
-    private fun openChat(phone: String) {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(239, 234, 226))
-        }
-
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            setBackgroundColor(Color.rgb(7, 94, 84))
-        }
-
-        val back = TextView(this).apply {
-            text = "‹"
-            textSize = 38f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-
-            layoutParams = LinearLayout.LayoutParams(
-                dp(48),
-                dp(56)
-            )
-
-            setOnClickListener {
-                showHome()
+                setBackgroundColor(
+                    Color.rgb(
+                        239,
+                        234,
+                        226
+                    )
+                )
             }
-        }
 
-        val title = TextView(this).apply {
-            text = "$phone\nonline"
-            textSize = 17f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), 0, dp(5), 0)
-        }
+        val top =
+            LinearLayout(this).apply {
 
-        val video = TextView(this).apply {
-            text = "▣"
-            textSize = 23f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+                orientation =
+                    LinearLayout.HORIZONTAL
 
-            layoutParams = LinearLayout.LayoutParams(
-                dp(48),
-                dp(56)
-            )
+                gravity =
+                    Gravity.CENTER_VERTICAL
 
-            setOnClickListener {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Video call akan disambungkan",
-                    Toast.LENGTH_SHORT
-                ).show()
+                setPadding(
+                    dp(5),
+                    dp(5),
+                    dp(5),
+                    dp(5)
+                )
+
+                setBackgroundColor(
+                    Color.rgb(
+                        7,
+                        94,
+                        84
+                    )
+                )
             }
-        }
 
-        val call = TextView(this).apply {
-            text = "☎"
-            textSize = 23f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        val back =
+            TextView(this).apply {
 
-            layoutParams = LinearLayout.LayoutParams(
-                dp(48),
-                dp(56)
-            )
+                text = "‹"
+                textSize = 38f
+                gravity = Gravity.CENTER
 
-            setOnClickListener {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Panggilan akan disambungkan",
-                    Toast.LENGTH_SHORT
-                ).show()
+                setTextColor(
+                    Color.WHITE
+                )
+
+                setOnClickListener {
+                    showHome()
+                }
             }
-        }
 
-        top.addView(back)
+        val title =
+            TextView(this).apply {
+
+                text =
+                    "$name\n$phone"
+
+                textSize = 16f
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+                gravity =
+                    Gravity.CENTER_VERTICAL
+
+                setTypeface(
+                    null,
+                    Typeface.BOLD
+                )
+            }
+
+        val video =
+            TextView(this).apply {
+
+                text = "▣"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+
+                setOnClickListener {
+
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Video call akan ditambahkan",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+
+        val call =
+            TextView(this).apply {
+
+                text = "☎"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+
+                setOnClickListener {
+
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Voice call akan ditambahkan",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+
+        top.addView(
+            back,
+            LinearLayout.LayoutParams(
+                dp(50),
+                dp(60)
+            )
+        )
 
         top.addView(
             title,
             LinearLayout.LayoutParams(
                 0,
-                dp(56),
+                dp(60),
                 1f
             )
         )
 
-        top.addView(video)
-        top.addView(call)
+        top.addView(
+            video,
+            LinearLayout.LayoutParams(
+                dp(50),
+                dp(60)
+            )
+        )
+
+        top.addView(
+            call,
+            LinearLayout.LayoutParams(
+                dp(50),
+                dp(60)
+            )
+        )
 
         root.addView(top)
 
-        val messages = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
+        val messages =
+            LinearLayout(this).apply {
 
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-        }
+                orientation =
+                    LinearLayout.VERTICAL
+
+                setPadding(
+                    dp(10),
+                    dp(10),
+                    dp(10),
+                    dp(10)
+                )
+            }
+
+        val scroll =
+            ScrollView(this).apply {
+                isFillViewport = true
+            }
 
         scroll.addView(messages)
 
@@ -384,153 +1114,171 @@ class MainActivity : Activity() {
             )
         )
 
-        val hello = TextView(this).apply {
-            text = "Chat dengan\n$phone"
-            textSize = 16f
-            setTextColor(Color.BLACK)
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            setBackgroundColor(Color.WHITE)
-        }
+        val bottom =
+            LinearLayout(this).apply {
 
-        messages.addView(hello)
+                orientation =
+                    LinearLayout.HORIZONTAL
 
-        val bottom = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(
-                dp(6),
-                dp(6),
-                dp(6),
-                dp(10)
-            )
-            setBackgroundColor(Color.WHITE)
-        }
+                gravity =
+                    Gravity.CENTER_VERTICAL
 
-        val attach = TextView(this).apply {
-            text = "+"
-            textSize = 28f
-            gravity = Gravity.CENTER
-            setTextColor(Color.DKGRAY)
+                setPadding(
+                    dp(5),
+                    dp(5),
+                    dp(5),
+                    dp(8)
+                )
 
-            layoutParams = LinearLayout.LayoutParams(
-                dp(48),
-                dp(52)
-            )
-
-            setOnClickListener {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Kirim foto/video/file",
-                    Toast.LENGTH_SHORT
-                ).show()
+                setBackgroundColor(
+                    Color.WHITE
+                )
             }
-        }
 
-        val input = EditText(this).apply {
-            hint = "Ketik pesan"
-            textSize = 16f
-            setSingleLine(false)
-            maxLines = 4
-            minHeight = dp(48)
-            setPadding(
-                dp(12),
-                dp(8),
-                dp(12),
-                dp(8)
-            )
-        }
+        val attach =
+            TextView(this).apply {
 
-        val mic = TextView(this).apply {
-            text = "🎤"
-            textSize = 22f
-            gravity = Gravity.CENTER
+                text = "+"
+                textSize = 28f
+                gravity = Gravity.CENTER
 
-            layoutParams = LinearLayout.LayoutParams(
-                dp(48),
-                dp(52)
-            )
-
-            setOnClickListener {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Voice note",
-                    Toast.LENGTH_SHORT
-                ).show()
+                setOnClickListener {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Foto/video/file akan ditambahkan",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
-        }
 
-        val send = TextView(this).apply {
-            text = "➤"
-            textSize = 25f
-            gravity = Gravity.CENTER
-            setTextColor(Color.rgb(7, 94, 84))
+        val input =
+            EditText(this).apply {
 
-            layoutParams = LinearLayout.LayoutParams(
-                dp(48),
-                dp(52)
-            )
+                hint = "Pesan"
+                textSize = 16f
+                maxLines = 4
 
-            setOnClickListener {
-                val text = input.text
-                    .toString()
-                    .trim()
+                setPadding(
+                    dp(12),
+                    dp(8),
+                    dp(12),
+                    dp(8)
+                )
+            }
 
-                if (text.isNotEmpty()) {
+        val mic =
+            TextView(this).apply {
 
-                    val bubble = TextView(
-                        this@MainActivity
-                    ).apply {
-                        this.text = text
-                        textSize = 16f
-                        setTextColor(Color.BLACK)
+                text = "🎤"
+                textSize = 21f
+                gravity = Gravity.CENTER
 
-                        setPadding(
-                            dp(14),
-                            dp(10),
-                            dp(14),
-                            dp(10)
-                        )
+                setOnClickListener {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Voice note akan ditambahkan",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
 
-                        setBackgroundColor(
-                            Color.rgb(
-                                220,
-                                248,
-                                198
-                            )
-                        )
+        val send =
+            TextView(this).apply {
+
+                text = "➤"
+                textSize = 27f
+                gravity = Gravity.CENTER
+
+                setTextColor(
+                    Color.rgb(
+                        7,
+                        94,
+                        84
+                    )
+                )
+
+                setOnClickListener {
+
+                    val text =
+                        input.text
+                            .toString()
+                            .trim()
+
+                    if (text.isEmpty()) {
+                        return@setOnClickListener
                     }
 
-                    val params =
-                        LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply {
-                            gravity = Gravity.END
-                            setMargins(
-                                dp(50),
-                                dp(5),
-                                0,
-                                dp(5)
-                            )
-                        }
-
-                    messages.addView(
-                        bubble,
-                        params
-                    )
+                    val myPhone =
+                        prefs.getString(
+                            "phone",
+                            ""
+                        ) ?: ""
 
                     input.setText("")
 
-                    scroll.post {
-                        scroll.fullScroll(
-                            View.FOCUS_DOWN
-                        )
+                    background {
+
+                        val response =
+                            postJson(
+                                "/messages/send",
+                                JSONObject().apply {
+
+                                    put(
+                                        "fromPhone",
+                                        myPhone
+                                    )
+
+                                    put(
+                                        "toPhone",
+                                        phone
+                                    )
+
+                                    put(
+                                        "message",
+                                        text
+                                    )
+                                }
+                            )
+
+                        runOnUiThread {
+
+                            if (
+                                response.optBoolean(
+                                    "ok"
+                                )
+                            ) {
+
+                                lastMessages = ""
+
+                                loadMessages(
+                                    phone,
+                                    messages,
+                                    scroll
+                                )
+
+                            } else {
+
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    response.optString(
+                                        "message",
+                                        "Pesan gagal dikirim"
+                                    ),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        bottom.addView(attach)
+        bottom.addView(
+            attach,
+            LinearLayout.LayoutParams(
+                dp(45),
+                dp(52)
+            )
+        )
 
         bottom.addView(
             input,
@@ -541,73 +1289,320 @@ class MainActivity : Activity() {
             )
         )
 
-        bottom.addView(mic)
-        bottom.addView(send)
+        bottom.addView(
+            mic,
+            LinearLayout.LayoutParams(
+                dp(45),
+                dp(52)
+            )
+        )
 
-        root.addView(bottom)
+        bottom.addView(
+            send,
+            LinearLayout.LayoutParams(
+                dp(50),
+                dp(52)
+            )
+        )
 
-        bottom.setOnApplyWindowInsetsListener { view, insets ->
+        bottom.setOnApplyWindowInsetsListener {
+                view,
+                insets ->
 
             view.setPadding(
-                dp(6),
-                dp(6),
-                dp(6),
-                dp(10) + insets.systemWindowInsetBottom
+                dp(5),
+                dp(5),
+                dp(5),
+                dp(8) +
+                    insets.systemWindowInsetBottom
             )
 
             insets
         }
 
+        root.addView(bottom)
+
         setContentView(root)
 
-        bottom.post {
-            input.requestFocus()
+        startPolling(
+            phone,
+            messages,
+            scroll
+        )
+    }
+
+    private fun loadMessages(
+        phone: String,
+        container: LinearLayout,
+        scroll: ScrollView
+    ) {
+
+        val myPhone =
+            prefs.getString(
+                "phone",
+                ""
+            ) ?: ""
+
+        background {
+
+            val meEncoded =
+                URLEncoder.encode(
+                    myPhone,
+                    "UTF-8"
+                )
+
+            val otherEncoded =
+                URLEncoder.encode(
+                    phone,
+                    "UTF-8"
+                )
+
+            val response =
+                getJson(
+                    "/messages?me=$meEncoded&with=$otherEncoded"
+                )
+
+            if (
+                !response.optBoolean(
+                    "ok"
+                )
+            ) {
+                return@background
+            }
+
+            val array =
+                response.optJSONArray(
+                    "messages"
+                ) ?: JSONArray()
+
+            val snapshot =
+                array.toString()
+
+            if (snapshot == lastMessages) {
+                return@background
+            }
+
+            lastMessages = snapshot
+
+            runOnUiThread {
+
+                if (
+                    currentChatPhone != phone
+                ) {
+                    return@runOnUiThread
+                }
+
+                container.removeAllViews()
+
+                if (array.length() == 0) {
+
+                    container.addView(
+                        TextView(
+                            this@MainActivity
+                        ).apply {
+
+                            text =
+                                "Belum ada pesan.\nMulai percakapan dengan $phone"
+
+                            textSize = 15f
+                            setTextColor(
+                                Color.GRAY
+                            )
+
+                            gravity =
+                                Gravity.CENTER
+
+                            setPadding(
+                                dp(15),
+                                dp(30),
+                                dp(15),
+                                dp(30)
+                            )
+                        }
+                    )
+                }
+
+                for (
+                    i in 0
+                    until array.length()
+                ) {
+
+                    val message =
+                        array.getJSONObject(i)
+
+                    val sender =
+                        message.optString(
+                            "sender_phone"
+                        )
+
+                    val body =
+                        message.optString(
+                            "body"
+                        )
+
+                    val time =
+                        message.optString(
+                            "created_at"
+                        )
+
+                    val mine =
+                        sender == myPhone
+
+                    val bubble =
+                        TextView(
+                            this@MainActivity
+                        ).apply {
+
+                            text =
+                                "$body\n${shortTime(time)}"
+
+                            textSize = 16f
+
+                            setTextColor(
+                                Color.BLACK
+                            )
+
+                            setPadding(
+                                dp(13),
+                                dp(9),
+                                dp(13),
+                                dp(7)
+                            )
+
+                            setBackgroundColor(
+                                if (mine) {
+                                    Color.rgb(
+                                        220,
+                                        248,
+                                        198
+                                    )
+                                } else {
+                                    Color.WHITE
+                                }
+                            )
+                        }
+
+                    val params =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+
+                            gravity =
+                                if (mine) {
+                                    Gravity.END
+                                } else {
+                                    Gravity.START
+                                }
+
+                            if (mine) {
+                                setMargins(
+                                    dp(55),
+                                    dp(4),
+                                    0,
+                                    dp(4)
+                                )
+                            } else {
+                                setMargins(
+                                    0,
+                                    dp(4),
+                                    dp(55),
+                                    dp(4)
+                                )
+                            }
+                        }
+
+                    container.addView(
+                        bubble,
+                        params
+                    )
+                }
+
+                scroll.post {
+                    scroll.fullScroll(
+                        View.FOCUS_DOWN
+                    )
+                }
+            }
         }
     }
 
-    private fun showStatus() {
-        content.removeAllViews()
+    private fun shortTime(
+        value: String
+    ): String {
 
-        val title = TextView(this).apply {
-            text = "Status Saya"
-            textSize = 21f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.BLACK)
-            setPadding(dp(15), dp(20), dp(15), dp(10))
+        if (
+            value.length >= 16
+        ) {
+            return value
+                .substring(11, 16)
         }
 
-        val description = TextView(this).apply {
-            text =
-                "Status foto, video dan teks 24 jam akan ditampilkan di sini."
-            textSize = 16f
-            setTextColor(Color.DKGRAY)
-            setPadding(dp(15), dp(5), dp(15), dp(20))
-        }
-
-        content.addView(title)
-        content.addView(description)
+        return ""
     }
 
-    private fun showCalls() {
-        content.removeAllViews()
+    private fun startPolling(
+        phone: String,
+        container: LinearLayout,
+        scroll: ScrollView
+    ) {
 
-        val title = TextView(this).apply {
-            text = "Panggilan AnhChat"
-            textSize = 21f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.BLACK)
-            setPadding(dp(15), dp(20), dp(15), dp(10))
+        stopPolling()
+
+        val runnable =
+            object : Runnable {
+
+                override fun run() {
+
+                    if (
+                        currentChatPhone
+                            != phone
+                    ) {
+                        return
+                    }
+
+                    loadMessages(
+                        phone,
+                        container,
+                        scroll
+                    )
+
+                    handler.postDelayed(
+                        this,
+                        2500
+                    )
+                }
+            }
+
+        pollRunnable = runnable
+        handler.post(runnable)
+    }
+
+    private fun stopPolling() {
+
+        pollRunnable?.let {
+            handler.removeCallbacks(it)
         }
 
-        val description = TextView(this).apply {
-            text =
-                "Riwayat panggilan suara dan video akan tampil di sini."
-            textSize = 16f
-            setTextColor(Color.DKGRAY)
-            setPadding(dp(15), dp(5), dp(15), dp(20))
-        }
+        pollRunnable = null
+    }
 
-        content.addView(title)
-        content.addView(description)
+    @Deprecated(
+        "Deprecated in Java"
+    )
+    override fun onBackPressed() {
+
+        if (
+            currentChatPhone != null
+        ) {
+            showHome()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    override fun onDestroy() {
+        stopPolling()
+        super.onDestroy()
     }
 }
